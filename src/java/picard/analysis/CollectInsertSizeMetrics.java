@@ -82,7 +82,12 @@ public class CollectInsertSizeMetrics extends SinglePassSamProgram {
 
     /** Required main method implementation. */
     public static void main(final String[] argv) {
+
         new CollectInsertSizeMetrics().instanceMainWithExit(argv);
+
+
+
+
     }
 
     /**
@@ -113,6 +118,7 @@ public class CollectInsertSizeMetrics extends SinglePassSamProgram {
     }
 
     @Override protected void acceptRead(final SAMRecord record, final ReferenceSequence ref) {
+
         multiCollector.acceptRecord(record, ref);
     }
 
