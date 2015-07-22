@@ -1,3 +1,4 @@
+
 package picard.analysis;
 
 import htsjdk.samtools.SAMFileHeader;
@@ -18,8 +19,8 @@ import picard.cmdline.Option;
 import picard.cmdline.StandardOptionDefinitions;
 
 import java.io.File;
-import java.util.Arrays;
-import java.util.Collection;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Super class that is designed to provide some consistent structure between subclasses that
@@ -43,6 +44,8 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
     public long STOP_AFTER = 0;
 
     private static final Log log = Log.getInstance(SinglePassSamProgram.class);
+    private static final int QUEUE_CAPACITY = 2;
+    public static final int MAX_PAIRS = 1000;
 
     /**
      * Final implementation of doWork() that checks and loads the input and optionally reference
@@ -98,10 +101,56 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             program.setup(in.getFileHeader(), input);
             anyUseNoRefReads = anyUseNoRefReads || program.usesNoRefReads();
         }
-
+        //public void submitData(final List<String>)
 
         final ProgressLogger progress = new ProgressLogger(log);
 
+        final ExecutorService service = Executors.newFixedThreadPool(4);
+
+        final BlockingQueue<List<Object[]>> queue = new LinkedBlockingQueue<List<Object[]>>(
+                QUEUE_CAPACITY);
+
+
+        List<Object[]> pairs = new ArrayList<Object[]>(MAX_PAIRS);
+
+        final List<Object[]> poisonPill = Collections.emptyList();
+
+        service.execute(new Runnable() {
+
+            @Override
+            public void run() {
+                while (true) {
+
+                    try {
+                        final List<Object[]> tmpPairs = queue.take();
+                        if(tmpPairs.isEmpty()){
+                            return;
+                        }
+
+                        service.submit(new Runnable() {
+
+                            @Override
+                            public void run() {
+                                for (Object[] objects : tmpPairs) {
+                                    SAMRecord rec = (SAMRecord) objects[0];
+                                    ReferenceSequence ref = (ReferenceSequence) objects[1];
+                                    for (final SinglePassSamProgram program : programs) {
+                                        program.acceptRead(rec, ref);
+                                    }
+
+                                    progress.record(rec);
+                                }
+                            }
+                        });
+
+                    } catch (InterruptedException e1) {
+                        e1.printStackTrace();
+                    }
+                }
+            }
+
+
+        });
         for (final SAMRecord rec : in) {
             final ReferenceSequence ref;
             if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
@@ -109,12 +158,19 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             } else {
                 ref = walker.get(rec.getReferenceIndex());
             }
+            pairs.add(new Object[]{rec, ref});
 
-            for (final SinglePassSamProgram program : programs) {
-                program.acceptRead(rec, ref);
+            if (pairs.size() < MAX_PAIRS) {
+                continue;
             }
 
-            progress.record(rec);
+            try {
+                queue.put(pairs);
+            } catch (InterruptedException e1) {
+                e1.printStackTrace();
+            }
+
+            pairs = new ArrayList<Object[]>(MAX_PAIRS);
 
             // See if we need to terminate early?
             if (stopAfter > 0 && progress.getCount() >= stopAfter) {
@@ -126,6 +182,25 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 break;
             }
         }
+        try {
+            queue.put(pairs);
+        } catch (InterruptedException e1) {
+            e1.printStackTrace();
+        }
+
+        try {
+            queue.put(poisonPill);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+
+        }
+
+        service.shutdown();
+        try {
+            service.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         CloserUtil.close(in);
 
@@ -134,20 +209,28 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
         }
     }
 
-    /** Can be overriden and set to false if the section of unmapped reads at the end of the file isn't needed. */
-    protected boolean usesNoRefReads() { return true; }
+    /**
+     * Can be overriden and set to false if the section of unmapped reads at the end of the file isn't needed.
+     */
+    protected boolean usesNoRefReads() {
+        return true;
+    }
 
-    /** Should be implemented by subclasses to do one-time initialization work. */
+    /**
+     * Should be implemented by subclasses to do one-time initialization work.
+     */
     protected abstract void setup(final SAMFileHeader header, final File samFile);
 
     /**
-     * Should be implemented by subclasses to accept SAMRecords one at a time.
+     Should be implemented by subclasses to accept SAMRecords one at a time.
      * If the read has a reference sequence and a reference sequence file was supplied to the program
      * it will be passed as 'ref'. Otherwise 'ref' may be null.
      */
     protected abstract void acceptRead(final SAMRecord rec, final ReferenceSequence ref);
 
-    /** Should be implemented by subclasses to do one-time finalization work. */
+    /**
+     * Should be implemented by subclasses to do one-time finalization work.
+     */
     protected abstract void finish();
 
 }

@@ -82,7 +82,16 @@ public class CollectInsertSizeMetrics extends SinglePassSamProgram {
 
     /** Required main method implementation. */
     public static void main(final String[] argv) {
+        System.out.println("Start");
+
+        long start = System.nanoTime();
+
         new CollectInsertSizeMetrics().instanceMainWithExit(argv);
+
+        long stop = System.nanoTime();
+
+        System.out.println("Finish");
+        System.out.println("Elapsed: " + (stop - start));
     }
 
     /**
